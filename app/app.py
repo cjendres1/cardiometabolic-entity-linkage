@@ -102,8 +102,8 @@ def run_splink_pipeline(df):
             block_on("age", "gender")
         ],
         "comparisons": [
-            cl.jaro_winkler_at_thresholds("first_name", [0.88, 0.94]),
-            cl.jaro_winkler_at_thresholds("last_name", [0.88, 0.94]),
+            cl.name_comparison("first_name"),
+            cl.name_comparison("last_name"),
             cl.exact_match("gender"),
             cl.numeric_difference_at_thresholds("age", thresholds=[1, 3, 5]),
             cl.numeric_difference_at_thresholds("hba1c", thresholds=[0.2, 0.5, 1.0]),
