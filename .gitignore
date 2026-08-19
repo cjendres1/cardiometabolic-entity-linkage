@@ -1,0 +1,29 @@
+# Python / Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+
+# Large Datasets & Local Files
+data/*.csv
+data/*.parquet
+data/*.html
+*.db
+*.duckdb
+
+# Streamlit Local Cache & Settings
+.streamlit/secrets.toml
+
+# Environment Variables / API Keys
+.env
+
+# OS / Editor Files
+.DS_Store
+.vscode/
+.idea/
