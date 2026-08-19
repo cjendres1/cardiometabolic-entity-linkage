@@ -58,12 +58,11 @@ def load_and_prepare_data():
 
 @st.cache_data(show_spinner=False)
 def run_splink_model(df_records):
-    # Configure fast single-core DuckDB execution
+    # Isolated in-memory DuckDB connection
     con = duckdb.connect(database=":memory:")
     con.execute("PRAGMA threads=2;")
     db_api = DuckDBAPI(connection=con)
 
-    # Define blocking rules inside SettingsCreator to keep predictions fast
     settings = SettingsCreator(
         link_type="dedupe_only",
         blocking_rules_to_generate_predictions=[
@@ -81,18 +80,21 @@ def run_splink_model(df_records):
 
     linker = Linker(df_records, settings, db_api=db_api)
     
-    # Fast parameter estimation
+    # Fast training: Cap EM at 5 iterations and disable stdout chatter
     linker.training.estimate_u_using_random_sampling(max_pairs=500, seed=42)
+    
     linker.training.estimate_parameters_using_expectation_maximisation(
         block_on("first_name"),
-        estimate_without_term_frequencies=True
+        estimate_without_term_frequencies=True,
+        max_iterations=5
     )
     linker.training.estimate_parameters_using_expectation_maximisation(
         block_on("last_name"),
-        estimate_without_term_frequencies=True
+        estimate_without_term_frequencies=True,
+        max_iterations=5
     )
 
-    # Splink 4 predict call (no arguments allowed)
+    # Fast prediction
     predictions = linker.inference.predict()
     
     df_preds = predictions.as_pandas_dataframe()
