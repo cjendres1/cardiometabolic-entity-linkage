@@ -4,12 +4,11 @@ import pandas as pd
 import numpy as np
 import random
 import os
-import json
 import duckdb
 
-# --- Splink Imports ---
+# --- Splink 4 Native Imports ---
+from splink import Linker, DuckDBAPI, SettingsCreator, block_on
 import splink.comparison_library as cl
-from splink import Linker, DuckDBAPI, block_on
 
 # -----------------------------------------------------------------------------
 # PAGE CONFIGURATION
@@ -79,37 +78,37 @@ def load_and_prepare_data():
     return df_combined
 
 # -----------------------------------------------------------------------------
-# PIPELINE EXECUTION
+# PIPELINE EXECUTION (SPLINK 4 NATIVE)
 # -----------------------------------------------------------------------------
 @st.cache_data
 def run_splink_pipeline(df_records):
-    """Executes Splink linkage safely, extracts prediction data and HTML charts, and closes DuckDB."""
+    """Executes Splink linkage safely using SettingsCreator, extracts prediction data and HTML charts."""
     con = duckdb.connect()
     con.execute("SET threads = 1;")
     db_api = DuckDBAPI(connection=con)
 
-    # Splink 4 compatible comparison definitions
-    settings = {
-        "link_type": "dedupe_only",
-        "blocking_rules_to_generate_predictions": [
+    # Splink 4 SettingsCreator Syntax
+    settings = SettingsCreator(
+        link_type="dedupe_only",
+        blocking_rules_to_generate_predictions=[
             block_on("first_name", "gender"),
             block_on("last_name", "gender"),
             block_on("age", "gender")
         ],
-        "comparisons": [
+        comparisons=[
             cl.LevenshteinAtThresholds("first_name", [1, 2]),
             cl.LevenshteinAtThresholds("last_name", [1, 2]),
             cl.ExactMatch("gender"),
             cl.ExactMatch("age"),
             cl.ExactMatch("hba1c"),
         ],
-        "retain_matching_framework": True,
-        "retain_intermediate_calculation_columns": True
-    }
+        retain_matching_framework=True,
+        retain_intermediate_calculation_columns=True
+    )
 
     linker = Linker(df_records, settings, db_api=db_api)
     
-    # Fast parameter estimation
+    # Model Parameter Estimation
     linker.training.estimate_u_probability_two_random_records_match(max_pairs=2_500, seed=42)
     linker.training.estimate_parameters_using_expectation_maximization(
         block_on("first_name"), max_iterations=3
@@ -122,16 +121,16 @@ def run_splink_pipeline(df_records):
     df_preds = predictions.as_pandas_dataframe()
     records_dict = predictions.as_record_dict()
 
-    # Get raw chart dictionary (Altair/Vega-Lite) for m/u parameters
+    # Generate HTML string representation safely
     m_u_chart = linker.visualisations.m_u_parameters_chart()
-    m_u_html = m_u_chart.to_html() if hasattr(m_u_chart, "to_html") else str(m_u_chart)
+    m_u_html = m_u_chart.as_html() if hasattr(m_u_chart, "as_html") else m_u_chart.to_html()
 
-    # Pre-render waterfall charts for top predictions into HTML strings
+    # Pre-render waterfall charts for top predictions
     waterfall_html_map = {}
     for record in records_dict[:30]:
         pair_key = f"{record.get('unique_id_l')}---{record.get('unique_id_r')}"
         chart = linker.visualisations.waterfall_chart([record])
-        waterfall_html_map[pair_key] = chart.to_html() if hasattr(chart, "to_html") else str(chart)
+        waterfall_html_map[pair_key] = chart.as_html() if hasattr(chart, "as_html") else chart.to_html()
 
     con.close()
     return df_preds, m_u_html, waterfall_html_map
@@ -139,7 +138,7 @@ def run_splink_pipeline(df_records):
 # Load Data and Run Pipeline
 df_records = load_and_prepare_data()
 
-with st.spinner("⚡ Running Splink linkage pipeline..."):
+with st.spinner("⚡ Running Splink 4 linkage pipeline..."):
     df_predictions, m_u_html, waterfall_html_map = run_splink_pipeline(df_records)
 
 # -----------------------------------------------------------------------------
@@ -241,3 +240,4 @@ with tab3:
     st.markdown("Inspect the trained Expectation-Maximization match parameters across feature levels.")
 
     components.html(m_u_html, height=700, scrolling=True)
+    
