@@ -8,16 +8,13 @@ import duckdb
 
 # --- Splink Version-Agnostic Imports ---
 try:
-    # Splink 4.x
     from splink import Linker, DuckDBAPI, block_on
     import splink.comparison_library as cl
 except (ImportError, ModuleNotFoundError):
     try:
-        # Alternative Splink 4 syntax
         from splink import Linker, DuckDBAPI, block_on
         import splink.comparisons as cl
     except (ImportError, ModuleNotFoundError):
-        # Fallback for Splink 3.x
         from splink.duckdb.linker import DuckDBLinker as Linker
         from splink.duckdb.blocking_rule_library import block_on
         import splink.duckdb.comparison_library as cl
@@ -90,9 +87,9 @@ def load_and_prepare_data():
     df_combined = pd.concat([df_raw, duplicates], ignore_index=True)
     return df_combined
 
-@st.cache_resource
+@st.cache_data
 def run_splink_pipeline(df_records):
-    """Executes Splink probabilistic linkage safely using Splink 4 API."""
+    """Executes Splink linkage safely, extracts prediction data and html charts, and closes DuckDB."""
     con = duckdb.connect()
     con.execute("SET threads = 1;")
     db_api = DuckDBAPI(connection=con)
@@ -117,7 +114,7 @@ def run_splink_pipeline(df_records):
 
     linker = Linker(df_records, settings, db_api=db_api)
     
-    # Fast U-probability and Expectation-Maximization
+    # Fast parameter estimation
     linker.training.estimate_u_probability_two_random_records_match(max_pairs=2_500, seed=42)
     linker.training.estimate_parameters_using_expectation_maximization(
         block_on("first_name"), max_iterations=3
@@ -128,14 +125,31 @@ def run_splink_pipeline(df_records):
 
     predictions = linker.inference.predict(match_weight_threshold=-5.0)
     df_preds = predictions.as_pandas_dataframe()
-    
-    con.close()
-    
-    return linker, predictions, df_preds
+    records_dict = predictions.as_record_dict()
 
-# Load Data and Train Linker
+    # Pre-render m/u parameters chart HTML
+    chart_m_u_path = "temp_m_u.html"
+    linker.visualisations.m_u_parameters_chart(out_path=chart_m_u_path)
+    with open(chart_m_u_path, "r", encoding="utf-8") as f:
+        m_u_html = f.read()
+
+    # Pre-render waterfall chart HTML for top predicted match pairs
+    waterfall_html_map = {}
+    for idx, record in enumerate(records_dict[:50]):  # Cache top 50 pairs for fast UI rendering
+        pair_key = f"{record.get('unique_id_l')}---{record.get('unique_id_r')}"
+        chart_path = f"temp_waterfall_{idx}.html"
+        linker.visualisations.waterfall_chart([record], out_path=chart_path)
+        with open(chart_path, "r", encoding="utf-8") as f:
+            waterfall_html_map[pair_key] = f.read()
+
+    con.close()
+    return df_preds, records_dict, m_u_html, waterfall_html_map
+
+# Load Data and Run Pipeline
 df_records = load_and_prepare_data()
-linker, predictions, df_predictions = run_splink_pipeline(df_records)
+
+with st.spinner("⚡ Running Splink linkage pipeline (3–5 seconds)..."):
+    df_predictions, records_dict, m_u_html, waterfall_html_map = run_splink_pipeline(df_records)
 
 # -----------------------------------------------------------------------------
 # SIDEBAR CONTROLS
@@ -211,23 +225,22 @@ with tab2:
 
     if len(filtered_preds) > 0:
         pair_options = filtered_preds.apply(
-            lambda r: f"Pair [{r['unique_id_l']} ↔ {r['unique_id_r']}] | Names: ({r['first_name_l']} {r['last_name_l']} / {r['first_name_r']} {r['last_name_r']}) | Weight: {r['match_weight']:.2f}",
+            lambda r: (
+                f"Pair [{r['unique_id_l']} ↔ {r['unique_id_r']}] | "
+                f"Names: ({r['first_name_l']} {r['last_name_l']} / {r['first_name_r']} {r['last_name_r']}) | "
+                f"Weight: {r['match_weight']:.2f}"
+            ),
             axis=1
         ).tolist()
 
         selected_pair_str = st.selectbox("Select a Record Pair to Inspect:", pair_options)
-        selected_idx = pair_options.index(selected_pair_str)
-        
-        # In Splink 4, records_to_view expects Splink predictions record dictionary
-        records_to_view = predictions.as_record_dict()[selected_idx:selected_idx+1]
+        selected_row = filtered_preds.iloc[pair_options.index(selected_pair_str)]
+        lookup_key = f"{selected_row['unique_id_l']}---{selected_row['unique_id_r']}"
 
-        chart_html_path = "temp_waterfall.html"
-        linker.visualisations.waterfall_chart(records_to_view, out_path=chart_html_path)
-
-        with open(chart_html_path, "r", encoding="utf-8") as f:
-            html_content = f.read()
-
-        components.html(html_content, height=500, scrolling=True)
+        if lookup_key in waterfall_html_map:
+            components.html(waterfall_html_map[lookup_key], height=500, scrolling=True)
+        else:
+            st.info("Waterfall diagnostic chart is available for the top candidate pairs.")
     else:
         st.warning("No records pass the selected match weight threshold. Lower the threshold in the sidebar.")
 
@@ -235,12 +248,6 @@ with tab2:
 with tab3:
     st.subheader("Model Parameter Diagnostics ($m$ and $u$ Probabilities)")
     st.markdown("Inspect the trained Expectation-Maximization match parameters across feature levels.")
-
-    chart_m_u_path = "temp_m_u.html"
-    linker.visualisations.m_u_parameters_chart(out_path=chart_m_u_path)
-
-    with open(chart_m_u_path, "r", encoding="utf-8") as f:
-        m_u_html = f.read()
 
     components.html(m_u_html, height=700, scrolling=True)
     
