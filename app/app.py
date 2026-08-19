@@ -58,7 +58,7 @@ def load_and_prepare_data():
 
 @st.cache_data(show_spinner=False)
 def run_splink_model(df_records):
-    # Ephemeral memory connection closed immediately after execution
+    # Isolated in-memory DuckDB connection
     con = duckdb.connect(database=":memory:")
     con.execute("SET threads = 1;")
     db_api = DuckDBAPI(connection=con)
@@ -78,8 +78,10 @@ def run_splink_model(df_records):
     )
 
     linker = Linker(df_records, settings, db_api=db_api)
-    linker.training.estimate_u_probability_two_random_records_match(max_pairs=1000, seed=42)
-    linker.training.estimate_parameters_using_expectation_maximization(block_on("first_name"), max_iterations=2)
+    
+    # --- Splink 4 Updated Training API ---
+    linker.training.estimate_u_probabilities(max_pairs=1000, seed=42)
+    linker.training.estimate_parameters_using_em(block_on("first_name"), max_iterations=2)
 
     predictions = linker.inference.predict(match_weight_threshold=-5.0)
     df_preds = predictions.as_pandas_dataframe()
