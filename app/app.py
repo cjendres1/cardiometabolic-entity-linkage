@@ -103,11 +103,12 @@ def load_and_prepare_data():
 
 @st.cache_data(show_spinner=False)
 def run_splink_model(df_records):
-    # Single-threaded DuckDB to prevent container healthcheck timeouts
+    # Single-threaded DuckDB execution for web container stability
     con = duckdb.connect(database=":memory:")
     con.execute("PRAGMA threads=1;")
     db_api = DuckDBAPI(connection=con)
 
+    # Streamlined comparisons and explicit baseline probabilities
     settings = SettingsCreator(
         link_type="dedupe_only",
         blocking_rules_to_generate_predictions=[
@@ -116,8 +117,8 @@ def run_splink_model(df_records):
             block_on("first_name", "last_name"),
         ],
         comparisons=[
-            cl.LevenshteinAtThresholds("first_name", [1, 2]),
-            cl.LevenshteinAtThresholds("last_name", [1, 2]),
+            cl.ExactMatch("first_name"),
+            cl.ExactMatch("last_name"),
             cl.ExactMatch("gender"),
             cl.ExactMatch("age"),
         ],
@@ -126,13 +127,10 @@ def run_splink_model(df_records):
 
     linker = Linker(df_records, settings, db_api=db_api)
     
-    # Fast u-probability estimation via random sampling (< 0.2s)
-    linker.training.estimate_u_using_random_sampling(max_pairs=500, seed=42)
+    # Estimate u probabilities over a larger random sample
+    linker.training.estimate_u_using_random_sampling(max_pairs=2000, seed=42)
 
-    # Skip EM parameter training loops entirely on synthetic demo data
-    # Splink will automatically apply standard default weights for m parameters
-
-    # Fast prediction (< 1s execution)
+    # Fast prediction call
     predictions = linker.inference.predict()
     
     df_preds = predictions.as_pandas_dataframe()
