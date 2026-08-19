@@ -82,12 +82,12 @@ def load_and_prepare_data():
 # -----------------------------------------------------------------------------
 @st.cache_data
 def run_splink_pipeline(df_records):
-    """Executes Splink linkage safely using SettingsCreator, extracts prediction data and HTML charts."""
+    """Executes Splink linkage safely using explicit SettingsCreator parameters."""
     con = duckdb.connect()
     con.execute("SET threads = 1;")
     db_api = DuckDBAPI(connection=con)
 
-    # Splink 4 SettingsCreator Syntax
+    # Clean, compatible Splink 4 SettingsCreator construction
     settings = SettingsCreator(
         link_type="dedupe_only",
         blocking_rules_to_generate_predictions=[
@@ -121,16 +121,16 @@ def run_splink_pipeline(df_records):
     df_preds = predictions.as_pandas_dataframe()
     records_dict = predictions.as_record_dict()
 
-    # Generate HTML string representation safely
+    # Extract charts cleanly in Splink 4
     m_u_chart = linker.visualisations.m_u_parameters_chart()
-    m_u_html = m_u_chart.as_html() if hasattr(m_u_chart, "as_html") else m_u_chart.to_html()
+    m_u_html = m_u_chart.as_html() if hasattr(m_u_chart, "as_html") else str(m_u_chart)
 
     # Pre-render waterfall charts for top predictions
     waterfall_html_map = {}
     for record in records_dict[:30]:
         pair_key = f"{record.get('unique_id_l')}---{record.get('unique_id_r')}"
         chart = linker.visualisations.waterfall_chart([record])
-        waterfall_html_map[pair_key] = chart.as_html() if hasattr(chart, "as_html") else chart.to_html()
+        waterfall_html_map[pair_key] = chart.as_html() if hasattr(chart, "as_html") else str(chart)
 
     con.close()
     return df_preds, m_u_html, waterfall_html_map
@@ -240,4 +240,3 @@ with tab3:
     st.markdown("Inspect the trained Expectation-Maximization match parameters across feature levels.")
 
     components.html(m_u_html, height=700, scrolling=True)
-    
