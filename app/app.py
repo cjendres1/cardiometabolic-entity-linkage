@@ -74,8 +74,7 @@ def run_splink_model(df_records):
             cl.LevenshteinAtThresholds("last_name", [1, 2]),
             cl.ExactMatch("gender"),
             cl.ExactMatch("age"),
-        ],
-        retain_matching_framework=True
+        ]
     )
 
     linker = Linker(df_records, settings, db_api=db_api)
