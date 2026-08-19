@@ -7,10 +7,10 @@ import random
 import json
 import os
 
-from splink.duckdb.linker import DuckDBLinker
-import splink.duckdb.comparison_library as cl
-import splink.duckdb.comparison_template_library as ctl
-from splink.duckdb.blocking_rule_library import block_on
+# --- Splink 4.x Imports ---
+from splink import Linker, DuckDBAPI, block_on
+import splink.comparison_library as cl
+import splink.comparison_template_library as ctl
 
 # -----------------------------------------------------------------------------
 # PAGE CONFIGURATION
@@ -82,7 +82,8 @@ def load_and_prepare_data():
 
 @st.cache_resource
 def run_splink_pipeline(df):
-    """Executes Splink probabilistic linkage using DuckDB backend."""
+    db_api = DuckDBAPI()
+
     settings = {
         "link_type": "dedupe_only",
         "blocking_rules_to_generate_predictions": [
@@ -91,24 +92,24 @@ def run_splink_pipeline(df):
             block_on("age", "gender")
         ],
         "comparisons": [
-            ctl.name_comparison("first_name", jaro_winkler_thresholds=[0.88, 0.94]),
-            ctl.name_comparison("last_name", jaro_winkler_thresholds=[0.88, 0.94]),
-            cl.exact_match("gender"),
-            cl.numeric_difference_at_thresholds("age", thresholds=[1, 3, 5]),
-            cl.numeric_difference_at_thresholds("hba1c", thresholds=[0.2, 0.5, 1.0]),
+            ctl.NameComparison("first_name", jaro_winkler_thresholds=[0.88, 0.94]),
+            ctl.NameComparison("last_name", jaro_winkler_thresholds=[0.88, 0.94]),
+            cl.ExactMatch("gender"),
+            cl.NumericDifferenceAtThresholds("age", thresholds=[1, 3, 5]),
+            cl.NumericDifferenceAtThresholds("hba1c", thresholds=[0.2, 0.5, 1.0]),
         ],
         "retain_matching_framework": True,
         "retain_intermediate_calculation_columns": True
     }
 
-    linker = DuckDBLinker(df, settings)
-    linker.estimate_u_probability_two_random_records_match(max_pairs=50_000, seed=42)
-    linker.estimate_parameters_using_expectation_maximization(block_on("first_name"))
-    linker.estimate_parameters_using_expectation_maximization(block_on("last_name"))
+    linker = Linker(df, settings, db_api=db_api)
+    linker.training.estimate_u_probability_two_random_records_match(max_pairs=50_000, seed=42)
+    linker.training.estimate_parameters_using_expectation_maximization(block_on("first_name"))
+    linker.training.estimate_parameters_using_expectation_maximization(block_on("last_name"))
 
-    predictions = linker.predict(match_weight_threshold=-5.0)
+    predictions = linker.inference.predict(match_weight_threshold=-5.0)
     df_preds = predictions.as_pandas_dataframe()
-    
+
     return linker, df_preds
 
 # Load Data and Train Linker
