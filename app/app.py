@@ -2,12 +2,10 @@ import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
 import numpy as np
-import duckdb
 import random
-import json
 import os
 
-# --- Splink 4.x Imports ---
+# --- Splink 4.x Standard Imports ---
 from splink import Linker, DuckDBAPI, block_on
 import splink.comparisons as cl
 
@@ -24,7 +22,7 @@ st.set_page_config(
 st.title("⚡ Cardiometabolic Entity Linkage Dashboard")
 st.markdown(
     "Probabilistic record linkage across **CDC NHANES (2009–2018)** cohorts using "
-    "the **Fellegi-Sunter model** (`Splink` + `DuckDB`)."
+    "the **Fellegi-Sunter model** (`Splink 4` + `DuckDB`)."
 )
 
 # -----------------------------------------------------------------------------
@@ -38,7 +36,7 @@ def load_and_prepare_data():
     if os.path.exists(csv_path):
         df_raw = pd.read_csv(csv_path)
     else:
-        # Fallback mock data if CSV is not yet generated
+        # Fallback mock data if CSV is not present
         np.random.seed(42)
         n_rows = 1000
         df_raw = pd.DataFrame({
@@ -52,7 +50,7 @@ def load_and_prepare_data():
             "cycle": np.random.choice(["2009-2010", "2011-2012", "2013-2014", "2015-2016", "2017-2018"], size=n_rows)
         })
 
-    # Synthetic identity injection (First & Last Names)
+    # Synthetic identities for linkage demonstration
     first_names = ["James", "John", "Robert", "Michael", "William", "Mary", "Patricia", "Jennifer", "Linda", "Elizabeth"]
     last_names = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", "Rodriguez", "Martinez"]
 
@@ -61,7 +59,7 @@ def load_and_prepare_data():
     df_raw["first_name"] = np.random.choice(first_names, size=len(df_raw))
     df_raw["last_name"] = np.random.choice(last_names, size=len(df_raw))
 
-    # Inject 10% duplicates with noise (typos / slight metric variances)
+    # Inject 10% duplicates with noise
     sample_size = max(10, int(len(df_raw) * 0.10))
     duplicates = df_raw.sample(n=sample_size, random_state=42).copy()
 
@@ -81,6 +79,7 @@ def load_and_prepare_data():
 
 @st.cache_resource
 def run_splink_pipeline(df):
+    """Executes Splink probabilistic linkage using DuckDB backend."""
     db_api = DuckDBAPI()
 
     settings = {
@@ -91,8 +90,8 @@ def run_splink_pipeline(df):
             block_on("age", "gender")
         ],
         "comparisons": [
-            ctl.NameComparison("first_name", jaro_winkler_thresholds=[0.88, 0.94]),
-            ctl.NameComparison("last_name", jaro_winkler_thresholds=[0.88, 0.94]),
+            cl.JaroWinklerAtThresholds("first_name", [0.88, 0.94]),
+            cl.JaroWinklerAtThresholds("last_name", [0.88, 0.94]),
             cl.ExactMatch("gender"),
             cl.NumericDifferenceAtThresholds("age", thresholds=[1, 3, 5]),
             cl.NumericDifferenceAtThresholds("hba1c", thresholds=[0.2, 0.5, 1.0]),
@@ -102,18 +101,21 @@ def run_splink_pipeline(df):
     }
 
     linker = Linker(df, settings, db_api=db_api)
+    
+    # Splink 4 uses linker.training
     linker.training.estimate_u_probability_two_random_records_match(max_pairs=50_000, seed=42)
     linker.training.estimate_parameters_using_expectation_maximization(block_on("first_name"))
     linker.training.estimate_parameters_using_expectation_maximization(block_on("last_name"))
 
+    # Splink 4 uses linker.inference
     predictions = linker.inference.predict(match_weight_threshold=-5.0)
     df_preds = predictions.as_pandas_dataframe()
-
-    return linker, df_preds
+    
+    return linker, predictions, df_preds
 
 # Load Data and Train Linker
 df_records = load_and_prepare_data()
-linker, df_predictions = run_splink_pipeline(df_records)
+linker, predictions, df_predictions = run_splink_pipeline(df_records)
 
 # -----------------------------------------------------------------------------
 # SIDEBAR CONTROLS
@@ -188,7 +190,6 @@ with tab2:
     )
 
     if len(filtered_preds) > 0:
-        # Create a dropdown selector for specific record pairs
         pair_options = filtered_preds.apply(
             lambda r: f"Pair [{r['unique_id_l']} ↔ {r['unique_id_r']}] | Names: ({r['first_name_l']} {r['last_name_l']} / {r['first_name_r']} {r['last_name_r']}) | Weight: {r['match_weight']:.2f}",
             axis=1
@@ -196,30 +197,24 @@ with tab2:
 
         selected_pair_str = st.selectbox("Select a Record Pair to Inspect:", pair_options)
         selected_idx = pair_options.index(selected_pair_str)
-        selected_record = filtered_preds.iloc[selected_idx].to_dict()
-
-        # Render Splink HTML Waterfall Chart via Streamlit Components iframe
-        records_to_view = [selected_record]
         
-        # Save temporary HTML chart using Splink's visualization engine
+        # In Splink 4, records_to_view expects Splink predictions record dictionary
+        records_to_view = predictions.as_record_dict()[selected_idx:selected_idx+1]
+
         chart_html_path = "temp_waterfall.html"
         linker.visualisations.waterfall_chart(records_to_view, out_path=chart_html_path)
 
         with open(chart_html_path, "r", encoding="utf-8") as f:
             html_content = f.read()
 
-        # Render embedded HTML directly in Streamlit
         components.html(html_content, height=500, scrolling=True)
-
     else:
-        st.warning("No records pass the selected match weight threshold. Lower the threshold in the sidebar to inspect records.")
+        st.warning("No records pass the selected match weight threshold. Lower the threshold in the sidebar.")
 
 # --- TAB 3: MODEL PARAMETERS ---
 with tab3:
     st.subheader("Model Parameter Diagnostics ($m$ and $u$ Probabilities)")
-    st.markdown(
-        "Inspect the trained Expectation-Maximization match parameters across feature levels."
-    )
+    st.markdown("Inspect the trained Expectation-Maximization match parameters across feature levels.")
 
     chart_m_u_path = "temp_m_u.html"
     linker.visualisations.m_u_parameters_chart(out_path=chart_m_u_path)
