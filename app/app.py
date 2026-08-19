@@ -6,9 +6,8 @@ import random
 import os
 import duckdb
 
-from splink.duckdb.linker import DuckDBAPI, Linker
-from splink.duckdb.blocking_rule_library import block_on
-import splink.duckdb.comparison_library as cl
+from splink import DuckDBAPI, Linker, SettingsCreator, block_on
+import splink.comparison_library as cl
 
 # --------------------------------------------------------------------
 # HELPER: SYNTHETIC NAME GENERATOR
