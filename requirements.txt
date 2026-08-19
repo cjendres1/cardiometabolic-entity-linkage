@@ -1,5 +1,7 @@
-splink>=3.9.0
+streamlit>=1.30.0
+pandas>=2.0.0
+numpy>=1.24.0
 duckdb>=0.9.0
-pandas
+splink>=4.0.0
 rapidfuzz
 jellyfish

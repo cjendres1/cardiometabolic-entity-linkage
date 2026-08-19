@@ -5,9 +5,21 @@ import numpy as np
 import random
 import os
 
-# --- Splink 4.x Standard Imports ---
-from splink import Linker, DuckDBAPI, block_on
-import splink.comparisons as cl
+# --- Splink Version-Agnostic Imports ---
+try:
+    # Splink 4.x
+    from splink import Linker, DuckDBAPI, block_on
+    import splink.comparison_library as cl
+except (ImportError, ModuleNotFoundError):
+    try:
+        # Alternative Splink 4 syntax
+        from splink import Linker, DuckDBAPI, block_on
+        import splink.comparisons as cl
+    except (ImportError, ModuleNotFoundError):
+        # Fallback for Splink 3.x
+        from splink.duckdb.linker import DuckDBLinker as Linker
+        from splink.duckdb.blocking_rule_library import block_on
+        import splink.duckdb.comparison_library as cl
 
 # -----------------------------------------------------------------------------
 # PAGE CONFIGURATION
