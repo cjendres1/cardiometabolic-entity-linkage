@@ -79,11 +79,12 @@ def run_splink_model(df_records):
 
     linker = Linker(df_records, settings, db_api=db_api)
     
-    # --- Exact Splink API Training Calls ---
+    # Exact Splink 4 Training API Calls
     linker.training.estimate_u_using_random_sampling(max_pairs=1000, seed=42)
     linker.training.estimate_parameters_using_expectation_maximisation(block_on("first_name"))
 
-    predictions = linker.inference.predict(match_weight_threshold=-5.0)
+    # --- Splink 4 Predict Call (No arguments) ---
+    predictions = linker.inference.predict()
     df_preds = predictions.as_pandas_dataframe()
     records_dict = predictions.as_record_dict()
 
