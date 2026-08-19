@@ -58,11 +58,12 @@ def load_and_prepare_data():
 
 @st.cache_data(show_spinner=False)
 def run_splink_model(df_records):
-    # Isolated in-memory DuckDB connection
+    # Configure fast single-core DuckDB execution
     con = duckdb.connect(database=":memory:")
-    con.execute("SET threads = 1;")
+    con.execute("PRAGMA threads=2;")
     db_api = DuckDBAPI(connection=con)
 
+    # Core settings
     settings = SettingsCreator(
         link_type="dedupe_only",
         blocking_rules_to_generate_predictions=[
@@ -80,11 +81,8 @@ def run_splink_model(df_records):
 
     linker = Linker(df_records, settings, db_api=db_api)
     
-    # 1. Estimate u probabilities via random sampling
-    linker.training.estimate_u_using_random_sampling(max_pairs=1000, seed=42)
-    
-    # 2. Train m probabilities across complementary blocking rules
-    # (first_name trains last_name/gender; last_name trains first_name/gender)
+    # Fast parameter estimation
+    linker.training.estimate_u_using_random_sampling(max_pairs=500, seed=42)
     linker.training.estimate_parameters_using_expectation_maximisation(
         block_on("first_name"),
         estimate_without_term_frequencies=True
@@ -94,8 +92,14 @@ def run_splink_model(df_records):
         estimate_without_term_frequencies=True
     )
 
-    # 3. Predict without blocking on full cartesian product unnecessarily
-    predictions = linker.inference.predict()
+    # Fast prediction with explicit blocking rules
+    predictions = linker.inference.predict(
+        blocking_rules_to_generate_predictions=[
+            block_on("first_name"),
+            block_on("last_name")
+        ]
+    )
+    
     df_preds = predictions.as_pandas_dataframe()
     records_dict = predictions.as_record_dict()
 
