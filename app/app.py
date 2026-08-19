@@ -105,14 +105,16 @@ def load_and_prepare_data():
 def run_splink_model(df_records):
     # Isolated in-memory DuckDB connection
     con = duckdb.connect(database=":memory:")
-    con.execute("PRAGMA threads=2;")
+    con.execute("PRAGMA threads=1;")
     db_api = DuckDBAPI(connection=con)
 
+    # Tight blocking rules prevent quadratic pair explosion
     settings = SettingsCreator(
         link_type="dedupe_only",
         blocking_rules_to_generate_predictions=[
-            block_on("first_name"),
-            block_on("last_name")
+            block_on("first_name", "gender"),
+            block_on("last_name", "gender"),
+            block_on("first_name", "last_name"),
         ],
         comparisons=[
             cl.LevenshteinAtThresholds("first_name", [1, 2]),
@@ -120,23 +122,22 @@ def run_splink_model(df_records):
             cl.ExactMatch("gender"),
             cl.ExactMatch("age"),
         ],
-        probability_two_random_records_match=0.01
+        probability_two_random_records_match=0.01,
+        max_iterations=5  # Configure iteration limit here if desired
     )
 
     linker = Linker(df_records, settings, db_api=db_api)
     
-    # Fast training: Cap EM at 5 iterations and disable stdout chatter
+    # Fast parameter estimation
     linker.training.estimate_u_using_random_sampling(max_pairs=500, seed=42)
     
     linker.training.estimate_parameters_using_expectation_maximisation(
         block_on("first_name"),
-        estimate_without_term_frequencies=True,
-        max_iterations=5
+        estimate_without_term_frequencies=True
     )
     linker.training.estimate_parameters_using_expectation_maximisation(
         block_on("last_name"),
-        estimate_without_term_frequencies=True,
-        max_iterations=5
+        estimate_without_term_frequencies=True
     )
 
     # Fast prediction
