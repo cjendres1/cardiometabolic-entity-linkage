@@ -79,9 +79,9 @@ def run_splink_model(df_records):
 
     linker = Linker(df_records, settings, db_api=db_api)
     
-    # --- Splink 4 Updated Training API ---
-    linker.training.estimate_u_probabilities(max_pairs=1000, seed=42)
-    linker.training.estimate_parameters_using_em(block_on("first_name"), max_iterations=2)
+    # --- Exact Splink API Training Calls ---
+    linker.training.estimate_u_using_random_sampling(max_pairs=1000, seed=42)
+    linker.training.estimate_parameters_using_expectation_maximisation(block_on("first_name"), max_iterations=2)
 
     predictions = linker.inference.predict(match_weight_threshold=-5.0)
     df_preds = predictions.as_pandas_dataframe()
