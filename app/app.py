@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import random
 import os
+import duckdb
 
 # --- Splink Version-Agnostic Imports ---
 try:
@@ -90,9 +91,11 @@ def load_and_prepare_data():
     return df_combined
 
 @st.cache_resource
-def run_splink_pipeline(df):
-    """Executes Splink probabilistic linkage using DuckDB backend."""
-    db_api = DuckDBAPI()
+def run_splink_pipeline(df_records):
+    """Executes Splink probabilistic linkage safely using Splink 4 API."""
+    con = duckdb.connect()
+    con.execute("SET threads = 1;")
+    db_api = DuckDBAPI(connection=con)
 
     settings = {
         "link_type": "dedupe_only",
@@ -102,24 +105,31 @@ def run_splink_pipeline(df):
             block_on("age", "gender")
         ],
         "comparisons": [
-            cl.levenshtein_at_thresholds("first_name", [1, 2]),
-            cl.levenshtein_at_thresholds("last_name", [1, 2]),
-            cl.exact_match("gender"),
-            cl.numeric_difference_at_thresholds("age", thresholds=[1, 3, 5]),
-            cl.numeric_difference_at_thresholds("hba1c", thresholds=[0.2, 0.5, 1.0]),
+            cl.LevenshteinAtThresholds("first_name", 2),
+            cl.LevenshteinAtThresholds("last_name", 2),
+            cl.ExactMatch("gender"),
+            cl.NumericDifferenceAtThresholds("age", thresholds=[1, 3, 5]),
+            cl.NumericDifferenceAtThresholds("hba1c", thresholds=[0.2, 0.5, 1.0]),
         ],
         "retain_matching_framework": True,
         "retain_intermediate_calculation_columns": True
     }
 
-    linker = Linker(df, settings, db_api=db_api)
+    linker = Linker(df_records, settings, db_api=db_api)
     
-    linker.training.estimate_u_probability_two_random_records_match(max_pairs=50_000, seed=42)
-    linker.training.estimate_parameters_using_expectation_maximization(block_on("first_name"))
-    linker.training.estimate_parameters_using_expectation_maximization(block_on("last_name"))
+    # Fast U-probability and Expectation-Maximization
+    linker.training.estimate_u_probability_two_random_records_match(max_pairs=2_500, seed=42)
+    linker.training.estimate_parameters_using_expectation_maximization(
+        block_on("first_name"), max_iterations=3
+    )
+    linker.training.estimate_parameters_using_expectation_maximization(
+        block_on("last_name"), max_iterations=3
+    )
 
     predictions = linker.inference.predict(match_weight_threshold=-5.0)
     df_preds = predictions.as_pandas_dataframe()
+    
+    con.close()
     
     return linker, predictions, df_preds
 
