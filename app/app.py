@@ -74,16 +74,27 @@ def run_splink_model(df_records):
             cl.LevenshteinAtThresholds("last_name", [1, 2]),
             cl.ExactMatch("gender"),
             cl.ExactMatch("age"),
-        ]
+        ],
+        probability_two_random_records_match=0.01
     )
 
     linker = Linker(df_records, settings, db_api=db_api)
     
-    # Exact Splink 4 Training API Calls
+    # 1. Estimate u probabilities via random sampling
     linker.training.estimate_u_using_random_sampling(max_pairs=1000, seed=42)
-    linker.training.estimate_parameters_using_expectation_maximisation(block_on("first_name"))
+    
+    # 2. Train m probabilities across complementary blocking rules
+    # (first_name trains last_name/gender; last_name trains first_name/gender)
+    linker.training.estimate_parameters_using_expectation_maximisation(
+        block_on("first_name"),
+        estimate_without_term_frequencies=True
+    )
+    linker.training.estimate_parameters_using_expectation_maximisation(
+        block_on("last_name"),
+        estimate_without_term_frequencies=True
+    )
 
-    # --- Splink 4 Predict Call (No arguments) ---
+    # 3. Predict without blocking on full cartesian product unnecessarily
     predictions = linker.inference.predict()
     df_preds = predictions.as_pandas_dataframe()
     records_dict = predictions.as_record_dict()
