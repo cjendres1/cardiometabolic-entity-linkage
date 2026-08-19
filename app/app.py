@@ -78,7 +78,7 @@ def load_and_prepare_data():
         df_raw = pd.read_csv(csv_path)
     else:
         np.random.seed(42)
-        n_rows = 500  # Scaled down for fast demo rendering
+        n_rows = 500
         df_raw = pd.DataFrame({
             "SEQN": range(100000, 100000 + n_rows),
             "age": np.random.randint(18, 80, size=n_rows),
@@ -90,10 +90,14 @@ def load_and_prepare_data():
             "cycle": np.random.choice(["2009-2010", "2011-2012", "2013-2014"], size=n_rows)
         })
 
-    # Apply gender-aligned name mapping with expanded distributions
+    # Filter to a single cycle for rapid demo execution
+    if "cycle" in df_raw.columns:
+        df_raw = df_raw[df_raw["cycle"] == "2009-2010"].copy()
+
+    # Apply gender-aligned name mapping
     df_raw = generate_synthetic_names(df_raw)
 
-    # Generate test duplicate records for linkage demo
+    # Generate 10% test duplicates for linkage demo
     sample_size = max(5, int(len(df_raw) * 0.10))
     duplicates = df_raw.sample(n=sample_size, random_state=42).copy()
     duplicates["unique_id"] = duplicates["unique_id"] + "_dup"
