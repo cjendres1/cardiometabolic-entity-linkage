@@ -126,7 +126,9 @@ def run_splink_model(df_records):
             cl.ExactMatch("gender"),
             cl.ExactMatch("age"),
         ],
-        probability_two_random_records_match=0.01
+        probability_two_random_records_match=0.01,
+        retain_intermediate_calculation_columns=True,  # Enables waterfall_chart computation
+        retain_matching_columns=True                    # Retains input column values
     )
 
     linker = Linker(df_records, settings, db_api=db_api)
