@@ -6,8 +6,57 @@ import random
 import os
 import duckdb
 
-from splink import Linker, DuckDBAPI, SettingsCreator, block_on
-import splink.comparison_library as cl
+from splink.duckdb.linker import DuckDBAPI, Linker
+from splink.duckdb.blocking_rule_library import block_on
+import splink.duckdb.comparison_library as cl
+
+# --------------------------------------------------------------------
+# HELPER: SYNTHETIC NAME GENERATOR
+# --------------------------------------------------------------------
+def generate_synthetic_names(df_raw):
+    male_names = [
+        "James", "John", "Robert", "Michael", "William", "David", "Richard", "Joseph", "Thomas", "Charles",
+        "Christopher", "Daniel", "Matthew", "Anthony", "Mark", "Donald", "Steven", "Paul", "Andrew", "Joshua",
+        "Kenneth", "Kevin", "Brian", "George", "Timothy", "Ronald", "Edward", "Jason", "Jeffrey", "Ryan",
+        "Jacob", "Gary", "Nicholas", "Eric", "Jonathan", "Stephen", "Larry", "Justin", "Scott", "Brandon",
+        "Benjamin", "Samuel", "Gregory", "Alexander", "Frank", "Patrick", "Raymond", "Jack", "Dennis", "Jerry"
+    ]
+
+    female_names = [
+        "Mary", "Patricia", "Jennifer", "Linda", "Elizabeth", "Barbara", "Susan", "Jessica", "Sarah", "Karen",
+        "Lisa", "Nancy", "Betty", "Sandra", "Margaret", "Ashley", "Kimberly", "Emily", "Donna", "Michelle",
+        "Carol", "Amanda", "Dorothy", "Melissa", "Deborah", "Stephanie", "Rebecca", "Sharon", "Laura", "Cynthia",
+        "Kathleen", "Amy", "Angela", "Shirley", "Anna", "Brenda", "Pamela", "Nicole", "Emma", "Samantha",
+        "Katherine", "Christine", "Debra", "Rachel", "Carolyn", "Janet", "Maria", "Heather", "Diane", "Virginia"
+    ]
+
+    last_names = [
+        "Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", "Rodriguez", "Martinez",
+        "Hernandez", "Lopez", "Gonzalez", "Wilson", "Anderson", "Thomas", "Taylor", "Moore", "Jackson", "Martin",
+        "Lee", "Perez", "Thompson", "White", "Harris", "Sanchez", "Clark", "Ramirez", "Lewis", "Robinson",
+        "Walker", "Young", "Allen", "King", "Wright", "Scott", "Torres", "Nguyen", "Hill", "Flores",
+        "Green", "Adams", "Nelson", "Baker", "Hall", "Rivera", "Campbell", "Mitchell", "Carter", "Roberts",
+        "Gomez", "Phillips", "Evans", "Turner", "Diaz", "Parker", "Cruz", "Edwards", "Collins", "Reyes",
+        "Stewart", "Morris", "Morales", "Murphy", "Cook", "Rogers", "Gutierrez", "Ortiz", "Morgan", "Cooper",
+        "Peterson", "Bailey", "Reed", "Kelly", "Howard", "Ramos", "Kim", "Cox", "Ward", "Richardson",
+        "Watson", "Brooks", "Chavez", "Wood", "James", "Bennett", "Gray", "Mendoza", "Ruiz", "Hughes",
+        "Price", "Alvarez", "Castillo", "Sanders", "Patel", "Myers", "Long", "Ross", "Foster", "Jimenez"
+    ]
+
+    df_raw["unique_id"] = df_raw["SEQN"].astype(str)
+
+    # Align gender
+    is_male = df_raw["gender"].astype(str).str.upper().isin(["1", "M", "MALE", "1.0"])
+    
+    np.random.seed(42)  # Fixed seed for consistent rendering across reloads
+    df_raw["first_name"] = np.where(
+        is_male,
+        np.random.choice(male_names, size=len(df_raw)),
+        np.random.choice(female_names, size=len(df_raw))
+    )
+    df_raw["last_name"] = np.random.choice(last_names, size=len(df_raw))
+
+    return df_raw
 
 # -----------------------------------------------------------------------------
 # CONFIG & PAGE SETUP
@@ -20,10 +69,10 @@ st.set_page_config(
 
 st.title("⚡ Cardiometabolic Entity Linkage Dashboard")
 
-# -----------------------------------------------------------------------------
-# CACHED DATA & LINKAGE PIPELINE
-# -----------------------------------------------------------------------------
-@st.cache_data(show_spinner=False)
+# --------------------------------------------------------------------
+# DATA LOADING FUNCTION
+# --------------------------------------------------------------------
+@st.cache_data
 def load_and_prepare_data():
     csv_path = "data/nhanes_2009_2018_cardiometabolic.csv"
     if os.path.exists(csv_path):
@@ -42,13 +91,10 @@ def load_and_prepare_data():
             "cycle": np.random.choice(["2009-2010", "2011-2012", "2013-2014"], size=n_rows)
         })
 
-    first_names = ["James", "John", "Robert", "Michael", "William", "Mary", "Patricia", "Jennifer", "Linda", "Elizabeth"]
-    last_names = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", "Rodriguez", "Martinez"]
+    # Apply gender-aligned name mapping with expanded distributions
+    df_raw = generate_synthetic_names(df_raw)
 
-    df_raw["unique_id"] = df_raw["SEQN"].astype(str)
-    df_raw["first_name"] = np.random.choice(first_names, size=len(df_raw))
-    df_raw["last_name"] = np.random.choice(last_names, size=len(df_raw))
-
+    # Generate test duplicate records for linkage demo
     sample_size = max(5, int(len(df_raw) * 0.10))
     duplicates = df_raw.sample(n=sample_size, random_state=42).copy()
     duplicates["unique_id"] = duplicates["unique_id"] + "_dup"
