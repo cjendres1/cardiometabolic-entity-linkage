@@ -6,40 +6,31 @@ import random
 import os
 import duckdb
 
-# --- Splink 4 Native Imports ---
 from splink import Linker, DuckDBAPI, SettingsCreator, block_on
 import splink.comparison_library as cl
 
 # -----------------------------------------------------------------------------
-# PAGE CONFIGURATION
+# CONFIG & PAGE SETUP
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="Cardiometabolic Entity Linker",
     page_icon="⚡",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
 st.title("⚡ Cardiometabolic Entity Linkage Dashboard")
-st.markdown(
-    "Probabilistic record linkage across **CDC NHANES (2009–2018)** cohorts using "
-    "the **Fellegi-Sunter model** (`Splink 4` + `DuckDB`)."
-)
 
 # -----------------------------------------------------------------------------
-# DATA PREPARATION
+# CACHED DATA & LINKAGE PIPELINE
 # -----------------------------------------------------------------------------
-@st.cache_data
+@st.cache_data(show_spinner=False)
 def load_and_prepare_data():
-    """Loads NHANES data and injects synthetic EHR noise for demo purposes."""
     csv_path = "data/nhanes_2009_2018_cardiometabolic.csv"
-    
     if os.path.exists(csv_path):
         df_raw = pd.read_csv(csv_path)
     else:
-        # Fallback mock data if CSV is not present
         np.random.seed(42)
-        n_rows = 1000
+        n_rows = 500  # Scaled down for fast demo rendering
         df_raw = pd.DataFrame({
             "SEQN": range(100000, 100000 + n_rows),
             "age": np.random.randint(18, 80, size=n_rows),
@@ -48,195 +39,119 @@ def load_and_prepare_data():
             "fasting_glucose": np.random.randint(70, 180, size=n_rows),
             "sys_bp": np.random.randint(110, 160, size=n_rows),
             "diabetes_status": np.random.choice(["Yes", "No", "Borderline"], size=n_rows),
-            "cycle": np.random.choice(["2009-2010", "2011-2012", "2013-2014", "2015-2016", "2017-2018"], size=n_rows)
+            "cycle": np.random.choice(["2009-2010", "2011-2012", "2013-2014"], size=n_rows)
         })
 
     first_names = ["James", "John", "Robert", "Michael", "William", "Mary", "Patricia", "Jennifer", "Linda", "Elizabeth"]
     last_names = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", "Rodriguez", "Martinez"]
 
-    np.random.seed(42)
     df_raw["unique_id"] = df_raw["SEQN"].astype(str)
     df_raw["first_name"] = np.random.choice(first_names, size=len(df_raw))
     df_raw["last_name"] = np.random.choice(last_names, size=len(df_raw))
 
-    # Inject 10% duplicates with noise
-    sample_size = max(10, int(len(df_raw) * 0.10))
+    sample_size = max(5, int(len(df_raw) * 0.10))
     duplicates = df_raw.sample(n=sample_size, random_state=42).copy()
-
-    def inject_typo(name):
-        if len(str(name)) > 3 and random.random() > 0.4:
-            idx = random.randint(0, len(str(name)) - 1)
-            return name[:idx] + random.choice("abcdefghijklmnopqrstuvwxyz") + name[idx+1:]
-        return name
-
     duplicates["unique_id"] = duplicates["unique_id"] + "_dup"
-    duplicates["first_name"] = duplicates["first_name"].apply(inject_typo)
     duplicates["age"] = duplicates["age"] + np.random.choice([-1, 0, 1], size=len(duplicates))
-    duplicates["hba1c"] = np.round(duplicates["hba1c"] + np.random.normal(0, 0.2, size=len(duplicates)), 1)
 
-    df_combined = pd.concat([df_raw, duplicates], ignore_index=True)
-    return df_combined
+    return pd.concat([df_raw, duplicates], ignore_index=True)
 
-# -----------------------------------------------------------------------------
-# PIPELINE EXECUTION (SPLINK 4 NATIVE)
-# -----------------------------------------------------------------------------
-@st.cache_data
-def run_splink_pipeline(df_records):
-    """Executes Splink linkage safely using explicit SettingsCreator parameters."""
-    con = duckdb.connect()
+@st.cache_data(show_spinner=False)
+def run_splink_model(df_records):
+    # Ephemeral memory connection closed immediately after execution
+    con = duckdb.connect(database=":memory:")
     con.execute("SET threads = 1;")
     db_api = DuckDBAPI(connection=con)
 
-    # Clean, compatible Splink 4 SettingsCreator construction
     settings = SettingsCreator(
         link_type="dedupe_only",
         blocking_rules_to_generate_predictions=[
             block_on("first_name", "gender"),
-            block_on("last_name", "gender"),
-            block_on("age", "gender")
+            block_on("last_name", "gender")
         ],
         comparisons=[
             cl.LevenshteinAtThresholds("first_name", [1, 2]),
             cl.LevenshteinAtThresholds("last_name", [1, 2]),
             cl.ExactMatch("gender"),
             cl.ExactMatch("age"),
-            cl.ExactMatch("hba1c"),
         ],
-        retain_matching_framework=True,
-        retain_intermediate_calculation_columns=True
+        retain_matching_framework=True
     )
 
     linker = Linker(df_records, settings, db_api=db_api)
-    
-    # Model Parameter Estimation
-    linker.training.estimate_u_probability_two_random_records_match(max_pairs=2_500, seed=42)
-    linker.training.estimate_parameters_using_expectation_maximization(
-        block_on("first_name"), max_iterations=3
-    )
-    linker.training.estimate_parameters_using_expectation_maximization(
-        block_on("last_name"), max_iterations=3
-    )
+    linker.training.estimate_u_probability_two_random_records_match(max_pairs=1000, seed=42)
+    linker.training.estimate_parameters_using_expectation_maximization(block_on("first_name"), max_iterations=2)
 
     predictions = linker.inference.predict(match_weight_threshold=-5.0)
     df_preds = predictions.as_pandas_dataframe()
     records_dict = predictions.as_record_dict()
 
-    # Extract charts cleanly in Splink 4
     m_u_chart = linker.visualisations.m_u_parameters_chart()
     m_u_html = m_u_chart.as_html() if hasattr(m_u_chart, "as_html") else str(m_u_chart)
 
-    # Pre-render waterfall charts for top predictions
-    waterfall_html_map = {}
-    for record in records_dict[:30]:
-        pair_key = f"{record.get('unique_id_l')}---{record.get('unique_id_r')}"
-        chart = linker.visualisations.waterfall_chart([record])
-        waterfall_html_map[pair_key] = chart.as_html() if hasattr(chart, "as_html") else str(chart)
-
     con.close()
-    return df_preds, m_u_html, waterfall_html_map
+    return df_preds, records_dict, m_u_html
 
-# Load Data and Run Pipeline
+# Execute Pipeline safely
 df_records = load_and_prepare_data()
 
-with st.spinner("⚡ Running Splink 4 linkage pipeline..."):
-    df_predictions, m_u_html, waterfall_html_map = run_splink_pipeline(df_records)
+with st.spinner("⚡ Running Splink Linkage Pipeline..."):
+    df_predictions, records_dict, m_u_html = run_splink_model(df_records)
 
 # -----------------------------------------------------------------------------
-# SIDEBAR CONTROLS
+# INTERFACE
 # -----------------------------------------------------------------------------
 st.sidebar.header("🎛️ Linkage Filters")
-
-min_match_weight = float(df_predictions["match_weight"].min())
-max_match_weight = float(df_predictions["match_weight"].max())
+min_weight = float(df_predictions["match_weight"].min())
+max_weight = float(df_predictions["match_weight"].max())
 
 weight_threshold = st.sidebar.slider(
-    "Minimum Match Weight Threshold",
-    min_value=round(min_match_weight, 1),
-    max_value=round(max_match_weight, 1),
-    value=2.0,
-    step=0.5,
-    help="Match weights represent the log2 Bayes factor. Higher weights indicate stronger match probability."
+    "Match Weight Threshold",
+    min_value=round(min_weight, 1),
+    max_value=round(max_weight, 1),
+    value=1.0,
+    step=0.5
 )
 
 filtered_preds = df_predictions[df_predictions["match_weight"] >= weight_threshold].copy()
 
-# -----------------------------------------------------------------------------
-# METRICS TOP BAR
-# -----------------------------------------------------------------------------
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Total Input Records", f"{len(df_records):,}")
-col2.metric("Evaluated Candidate Pairs", f"{len(df_predictions):,}")
-col3.metric("Predicted High-Probability Links", f"{len(filtered_preds):,}")
-col4.metric("Max Match Weight", f"{max_match_weight:.2f}")
+# Metrics
+c1, c2, c3 = st.columns(3)
+c1.metric("Total Records", len(df_records))
+c2.metric("Evaluated Pairs", len(df_predictions))
+c3.metric("Predicted Links", len(filtered_preds))
 
 st.markdown("---")
 
-# -----------------------------------------------------------------------------
-# TABBED INTERFACE
-# -----------------------------------------------------------------------------
-tab1, tab2, tab3 = st.tabs(["📊 Pairwise Linkage Explorer", "🌊 Match Waterfall Diagnostics", "📈 Model Parameters"])
+tab1, tab2, tab3 = st.tabs(["📊 Predicted Links", "🌊 On-Demand Waterfall Diagnostic", "📈 Model Parameters"])
 
-# --- TAB 1: PAIRWISE EXPLORER ---
 with tab1:
-    st.subheader("Predicted Matches Table")
-    st.markdown("Filter candidates based on match weight and inspect individual pairwise records.")
+    st.dataframe(filtered_preds, use_container_width=True)
 
-    display_cols = [
-        "unique_id_l", "unique_id_r",
-        "first_name_l", "first_name_r",
-        "last_name_l", "last_name_r",
-        "gender_l", "gender_r",
-        "age_l", "age_r",
-        "hba1c_l", "hba1c_r",
-        "match_weight", "match_probability"
-    ]
-    
-    st.dataframe(
-        filtered_preds[display_cols].sort_values("match_weight", ascending=False),
-        use_container_width=True,
-        column_config={
-            "match_probability": st.column_config.ProgressColumn(
-                "Match Probability",
-                format="%.3f",
-                min_value=0.0,
-                max_value=1.0
-            ),
-            "match_weight": st.column_config.NumberColumn("Match Weight", format="%.2f")
-        }
-    )
-
-# --- TAB 2: WATERFALL DIAGNOSTICS ---
 with tab2:
-    st.subheader("Interactive Match Weight Waterfall Diagnostic")
-    st.markdown(
-        "The **Waterfall Chart** illustrates how each comparison feature contributes positive or "
-        "negative evidence toward the final match score for a given pair of records."
-    )
-
+    st.subheader("On-Demand Waterfall Diagnostic")
     if len(filtered_preds) > 0:
-        pair_options = filtered_preds.apply(
-            lambda r: (
-                f"Pair [{r['unique_id_l']} ↔ {r['unique_id_r']}] | "
-                f"Names: ({r['first_name_l']} {r['last_name_l']} / {r['first_name_r']} {r['last_name_r']}) | "
-                f"Weight: {r['match_weight']:.2f}"
-            ),
-            axis=1
-        ).tolist()
-
-        selected_pair_str = st.selectbox("Select a Record Pair to Inspect:", pair_options)
-        selected_row = filtered_preds.iloc[pair_options.index(selected_pair_str)]
-        lookup_key = f"{selected_row['unique_id_l']}---{selected_row['unique_id_r']}"
-
-        if lookup_key in waterfall_html_map:
-            components.html(waterfall_html_map[lookup_key], height=500, scrolling=True)
-        else:
-            st.info("Waterfall diagnostic chart is available for top candidate pairs.")
+        pair_map = {
+            f"Pair [{r['unique_id_l']} ↔ {r['unique_id_r']}] | Weight: {r['match_weight']:.2f}": idx 
+            for idx, r in filtered_preds.head(20).iterrows()
+        }
+        selected_label = st.selectbox("Select Record Pair:", list(pair_map.keys()))
+        selected_idx = pair_map[selected_label]
+        
+        # Render specific waterfall on demand rather than pre-computing 30 in a loop
+        record_match = [r for r in records_dict if r.get('unique_id_l') == filtered_preds.loc[selected_idx, 'unique_id_l'] and r.get('unique_id_r') == filtered_preds.loc[selected_idx, 'unique_id_r']]
+        
+        if record_match:
+            con_temp = duckdb.connect(database=":memory:")
+            db_api_temp = DuckDBAPI(connection=con_temp)
+            linker_temp = Linker(df_records, SettingsCreator(link_type="dedupe_only", comparisons=[cl.ExactMatch("gender")]), db_api=db_api_temp)
+            
+            wf_chart = linker_temp.visualisations.waterfall_chart(record_match)
+            html_val = wf_chart.as_html() if hasattr(wf_chart, "as_html") else str(wf_chart)
+            components.html(html_val, height=500, scrolling=True)
+            con_temp.close()
     else:
-        st.warning("No records pass the selected match weight threshold. Lower the threshold in the sidebar.")
+        st.warning("No records meet threshold criteria.")
 
-# --- TAB 3: MODEL PARAMETERS ---
 with tab3:
-    st.subheader("Model Parameter Diagnostics ($m$ and $u$ Probabilities)")
-    st.markdown("Inspect the trained Expectation-Maximization match parameters across feature levels.")
-
-    components.html(m_u_html, height=700, scrolling=True)
+    components.html(m_u_html, height=650, scrolling=True)
