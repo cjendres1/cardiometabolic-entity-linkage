@@ -1,16 +1,15 @@
+import os
+import numpy as np
+import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
-import pandas as pd
-import numpy as np
-import random
-import os
 import duckdb
 
 from splink import DuckDBAPI, Linker, SettingsCreator, block_on
 import splink.comparison_library as cl
 
 # --------------------------------------------------------------------
-# HELPER: SYNTHETIC NAME GENERATOR
+# 1. HELPER: GENDER-ALIGNED SYNTHETIC NAME GENERATOR
 # --------------------------------------------------------------------
 def generate_synthetic_names(df_raw):
     male_names = [
@@ -44,10 +43,10 @@ def generate_synthetic_names(df_raw):
 
     df_raw["unique_id"] = df_raw["SEQN"].astype(str)
 
-    # Align gender
-    is_male = df_raw["gender"].astype(str).str.upper().isin(["1", "M", "MALE", "1.0"])
-    
-    np.random.seed(42)  # Fixed seed for consistent rendering across reloads
+    # Match gender correctly (handles 'Male'/'Female', 1/2, or 'M'/'F')
+    is_male = df_raw["gender"].astype(str).str.upper().isin(["MALE", "1", "1.0", "M"])
+
+    np.random.seed(42)
     df_raw["first_name"] = np.where(
         is_male,
         np.random.choice(male_names, size=len(df_raw)),
@@ -57,19 +56,9 @@ def generate_synthetic_names(df_raw):
 
     return df_raw
 
-# -----------------------------------------------------------------------------
-# CONFIG & PAGE SETUP
-# -----------------------------------------------------------------------------
-st.set_page_config(
-    page_title="Cardiometabolic Entity Linker",
-    page_icon="⚡",
-    layout="wide"
-)
-
-st.title("⚡ Cardiometabolic Entity Linkage Dashboard")
 
 # --------------------------------------------------------------------
-# DATA LOADING FUNCTION
+# 2. DATA PREPARATION (CACHED)
 # --------------------------------------------------------------------
 @st.cache_data
 def load_and_prepare_data():
@@ -105,14 +94,17 @@ def load_and_prepare_data():
 
     return pd.concat([df_raw, duplicates], ignore_index=True)
 
+
+# --------------------------------------------------------------------
+# 3. SPLINK MODEL PIPELINE (CACHED)
+# --------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def run_splink_model(df_records):
-    # Single-threaded DuckDB execution for web container stability
+    # Single-threaded DuckDB connection prevents CPU/RAM spikes
     con = duckdb.connect(database=":memory:")
     con.execute("PRAGMA threads=1;")
     db_api = DuckDBAPI(connection=con)
 
-    # Streamlined comparisons and explicit baseline probabilities
     settings = SettingsCreator(
         link_type="dedupe_only",
         blocking_rules_to_generate_predictions=[
@@ -127,16 +119,16 @@ def run_splink_model(df_records):
             cl.ExactMatch("age"),
         ],
         probability_two_random_records_match=0.01,
-        retain_intermediate_calculation_columns=True,  # Enables waterfall_chart computation
-        retain_matching_columns=True                    # Retains input column values
+        retain_intermediate_calculation_columns=True,
+        retain_matching_columns=True
     )
 
     linker = Linker(df_records, settings, db_api=db_api)
     
-    # Estimate u probabilities over a larger random sample
-    linker.training.estimate_u_using_random_sampling(max_pairs=2000, seed=42)
+    # Fast parameter estimation via random sampling
+    linker.training.estimate_u_using_random_sampling(max_pairs=1000, seed=42)
 
-    # Fast prediction call
+    # Execute predictions
     predictions = linker.inference.predict()
     
     df_preds = predictions.as_pandas_dataframe()
@@ -148,66 +140,69 @@ def run_splink_model(df_records):
     con.close()
     return df_preds, records_dict, m_u_html
 
-# Execute Pipeline safely
+
+# --------------------------------------------------------------------
+# 4. STREAMLIT USER INTERFACE
+# --------------------------------------------------------------------
+st.set_page_config(
+    page_title="Cardiometabolic Entity Linkage",
+    page_icon="⚡",
+    layout="wide"
+)
+
+st.title("⚡ Cardiometabolic Entity Linkage Dashboard")
+st.markdown("Probabilistic record linkage on NHANES clinical survey data using **Splink** & **DuckDB**.")
+
 df_records = load_and_prepare_data()
 
 with st.spinner("⚡ Running Splink Linkage Pipeline..."):
     df_predictions, records_dict, m_u_html = run_splink_model(df_records)
 
-# -----------------------------------------------------------------------------
-# INTERFACE
-# -----------------------------------------------------------------------------
-st.sidebar.header("🎛️ Linkage Filters")
-min_weight = float(df_predictions["match_weight"].min())
-max_weight = float(df_predictions["match_weight"].max())
-
-weight_threshold = st.sidebar.slider(
-    "Match Weight Threshold",
-    min_value=round(min_weight, 1),
-    max_value=round(max_weight, 1),
-    value=1.0,
-    step=0.5
-)
-
-filtered_preds = df_predictions[df_predictions["match_weight"] >= weight_threshold].copy()
-
-# Metrics
-c1, c2, c3 = st.columns(3)
-c1.metric("Total Records", len(df_records))
-c2.metric("Evaluated Pairs", len(df_predictions))
-c3.metric("Predicted Links", len(filtered_preds))
+# Metrics Summary Bar
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Total Input Records", f"{len(df_records):,}")
+col2.metric("Candidate Pairs Evaluated", f"{len(df_predictions):,}")
+high_prob_matches = len(df_predictions[df_predictions["match_probability"] >= 0.8])
+col3.metric("High-Confidence Matches (≥80%)", f"{high_prob_matches:,}")
+avg_prob = df_predictions["match_probability"].mean() if not df_predictions.empty else 0
+col4.metric("Average Match Probability", f"{avg_prob:.1%}")
 
 st.markdown("---")
 
-tab1, tab2, tab3 = st.tabs(["📊 Predicted Links", "🌊 On-Demand Waterfall Diagnostic", "📈 Model Parameters"])
+# Dashboard Tabs
+tab1, tab2, tab3 = st.tabs(["📋 Linked Predictions", "📊 Model Parameters", "🔍 Match Inspection"])
 
 with tab1:
-    st.dataframe(filtered_preds, use_container_width=True)
+    st.subheader("Predicted Pair Matches")
+    min_prob = st.slider("Filter by Minimum Match Probability:", 0.0, 1.0, 0.5, 0.05)
+    
+    df_filtered = df_predictions[df_predictions["match_probability"] >= min_prob].copy()
+    
+    display_cols = [col for col in [
+        "match_weight", "match_probability", 
+        "first_name_l", "first_name_r", 
+        "last_name_l", "last_name_r", 
+        "age_l", "age_r", 
+        "gender_l", "gender_r", 
+        "unique_id_l", "unique_id_r"
+    ] if col in df_filtered.columns]
+    
+    st.dataframe(df_filtered[display_cols], use_container_width=True)
 
 with tab2:
-    st.subheader("On-Demand Waterfall Diagnostic")
-    if len(filtered_preds) > 0:
-        pair_map = {
-            f"Pair [{r['unique_id_l']} ↔ {r['unique_id_r']}] | Weight: {r['match_weight']:.2f}": idx 
-            for idx, r in filtered_preds.head(20).iterrows()
-        }
-        selected_label = st.selectbox("Select Record Pair:", list(pair_map.keys()))
-        selected_idx = pair_map[selected_label]
-        
-        # Render specific waterfall on demand rather than pre-computing 30 in a loop
-        record_match = [r for r in records_dict if r.get('unique_id_l') == filtered_preds.loc[selected_idx, 'unique_id_l'] and r.get('unique_id_r') == filtered_preds.loc[selected_idx, 'unique_id_r']]
-        
-        if record_match:
-            con_temp = duckdb.connect(database=":memory:")
-            db_api_temp = DuckDBAPI(connection=con_temp)
-            linker_temp = Linker(df_records, SettingsCreator(link_type="dedupe_only", comparisons=[cl.ExactMatch("gender")]), db_api=db_api_temp)
-            
-            wf_chart = linker_temp.visualisations.waterfall_chart(record_match)
-            html_val = wf_chart.as_html() if hasattr(wf_chart, "as_html") else str(wf_chart)
-            components.html(html_val, height=500, scrolling=True)
-            con_temp.close()
-    else:
-        st.warning("No records meet threshold criteria.")
+    st.subheader("m and u Parameter Weights")
+    st.markdown("Estimated match ($m$) and unmatch ($u$) probabilities across fields.")
+    components.html(m_u_html, height=500, scrolling=True)
 
 with tab3:
-    components.html(m_u_html, height=650, scrolling=True)
+    st.subheader("Match Probability Breakdown")
+    if records_dict:
+        selected_index = st.selectbox(
+            "Select Record Pair Index to Inspect:",
+            options=range(min(len(records_dict), 50)),
+            format_func=lambda i: f"Pair {i}: {records_dict[i].get('first_name_l', '')} {records_dict[i].get('last_name_l', '')} <-> {records_dict[i].get('first_name_r', '')} {records_dict[i].get('last_name_r', '')} (Prob: {records_dict[i].get('match_probability', 0):.2f})"
+        )
+        
+        st.json(records_dict[selected_index])
+    else:
+        st.info("No record pairs available for inspection.")
