@@ -9,8 +9,7 @@ import os
 
 # --- Splink 4.x Imports ---
 from splink import Linker, DuckDBAPI, block_on
-import splink.comparison_library as cl
-import splink.comparison_template_library as ctl
+import splink.comparisons as cl
 
 # -----------------------------------------------------------------------------
 # PAGE CONFIGURATION
