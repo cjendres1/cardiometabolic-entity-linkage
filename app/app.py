@@ -4,20 +4,12 @@ import pandas as pd
 import numpy as np
 import random
 import os
+import json
 import duckdb
 
-# --- Splink Version-Agnostic Imports ---
-try:
-    from splink import Linker, DuckDBAPI, block_on
-    import splink.comparison_library as cl
-except (ImportError, ModuleNotFoundError):
-    try:
-        from splink import Linker, DuckDBAPI, block_on
-        import splink.comparisons as cl
-    except (ImportError, ModuleNotFoundError):
-        from splink.duckdb.linker import DuckDBLinker as Linker
-        from splink.duckdb.blocking_rule_library import block_on
-        import splink.duckdb.comparison_library as cl
+# --- Splink Imports ---
+import splink.comparison_library as cl
+from splink import Linker, DuckDBAPI, block_on
 
 # -----------------------------------------------------------------------------
 # PAGE CONFIGURATION
@@ -36,7 +28,7 @@ st.markdown(
 )
 
 # -----------------------------------------------------------------------------
-# PIPELINE INITIALIZATION & CACHING
+# DATA PREPARATION
 # -----------------------------------------------------------------------------
 @st.cache_data
 def load_and_prepare_data():
@@ -60,7 +52,6 @@ def load_and_prepare_data():
             "cycle": np.random.choice(["2009-2010", "2011-2012", "2013-2014", "2015-2016", "2017-2018"], size=n_rows)
         })
 
-    # Synthetic identities for linkage demonstration
     first_names = ["James", "John", "Robert", "Michael", "William", "Mary", "Patricia", "Jennifer", "Linda", "Elizabeth"]
     last_names = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", "Rodriguez", "Martinez"]
 
@@ -87,13 +78,17 @@ def load_and_prepare_data():
     df_combined = pd.concat([df_raw, duplicates], ignore_index=True)
     return df_combined
 
+# -----------------------------------------------------------------------------
+# PIPELINE EXECUTION
+# -----------------------------------------------------------------------------
 @st.cache_data
 def run_splink_pipeline(df_records):
-    """Executes Splink linkage safely, extracts prediction data and html charts, and closes DuckDB."""
+    """Executes Splink linkage safely, extracts prediction data and HTML charts, and closes DuckDB."""
     con = duckdb.connect()
     con.execute("SET threads = 1;")
     db_api = DuckDBAPI(connection=con)
 
+    # Splink 4 compatible comparison definitions
     settings = {
         "link_type": "dedupe_only",
         "blocking_rules_to_generate_predictions": [
@@ -102,11 +97,11 @@ def run_splink_pipeline(df_records):
             block_on("age", "gender")
         ],
         "comparisons": [
-            cl.LevenshteinAtThresholds("first_name", 2),
-            cl.LevenshteinAtThresholds("last_name", 2),
+            cl.LevenshteinAtThresholds("first_name", [1, 2]),
+            cl.LevenshteinAtThresholds("last_name", [1, 2]),
             cl.ExactMatch("gender"),
-            cl.NumericDifferenceAtThresholds("age", thresholds=[1, 3, 5]),
-            cl.NumericDifferenceAtThresholds("hba1c", thresholds=[0.2, 0.5, 1.0]),
+            cl.ExactMatch("age"),
+            cl.ExactMatch("hba1c"),
         ],
         "retain_matching_framework": True,
         "retain_intermediate_calculation_columns": True
@@ -127,29 +122,25 @@ def run_splink_pipeline(df_records):
     df_preds = predictions.as_pandas_dataframe()
     records_dict = predictions.as_record_dict()
 
-    # Pre-render m/u parameters chart HTML
-    chart_m_u_path = "temp_m_u.html"
-    linker.visualisations.m_u_parameters_chart(out_path=chart_m_u_path)
-    with open(chart_m_u_path, "r", encoding="utf-8") as f:
-        m_u_html = f.read()
+    # Get raw chart dictionary (Altair/Vega-Lite) for m/u parameters
+    m_u_chart = linker.visualisations.m_u_parameters_chart()
+    m_u_html = m_u_chart.to_html() if hasattr(m_u_chart, "to_html") else str(m_u_chart)
 
-    # Pre-render waterfall chart HTML for top predicted match pairs
+    # Pre-render waterfall charts for top predictions into HTML strings
     waterfall_html_map = {}
-    for idx, record in enumerate(records_dict[:50]):  # Cache top 50 pairs for fast UI rendering
+    for record in records_dict[:30]:
         pair_key = f"{record.get('unique_id_l')}---{record.get('unique_id_r')}"
-        chart_path = f"temp_waterfall_{idx}.html"
-        linker.visualisations.waterfall_chart([record], out_path=chart_path)
-        with open(chart_path, "r", encoding="utf-8") as f:
-            waterfall_html_map[pair_key] = f.read()
+        chart = linker.visualisations.waterfall_chart([record])
+        waterfall_html_map[pair_key] = chart.to_html() if hasattr(chart, "to_html") else str(chart)
 
     con.close()
-    return df_preds, records_dict, m_u_html, waterfall_html_map
+    return df_preds, m_u_html, waterfall_html_map
 
 # Load Data and Run Pipeline
 df_records = load_and_prepare_data()
 
-with st.spinner("⚡ Running Splink linkage pipeline (3–5 seconds)..."):
-    df_predictions, records_dict, m_u_html, waterfall_html_map = run_splink_pipeline(df_records)
+with st.spinner("⚡ Running Splink linkage pipeline..."):
+    df_predictions, m_u_html, waterfall_html_map = run_splink_pipeline(df_records)
 
 # -----------------------------------------------------------------------------
 # SIDEBAR CONTROLS
@@ -240,7 +231,7 @@ with tab2:
         if lookup_key in waterfall_html_map:
             components.html(waterfall_html_map[lookup_key], height=500, scrolling=True)
         else:
-            st.info("Waterfall diagnostic chart is available for the top candidate pairs.")
+            st.info("Waterfall diagnostic chart is available for top candidate pairs.")
     else:
         st.warning("No records pass the selected match weight threshold. Lower the threshold in the sidebar.")
 
@@ -250,4 +241,3 @@ with tab3:
     st.markdown("Inspect the trained Expectation-Maximization match parameters across feature levels.")
 
     components.html(m_u_html, height=700, scrolling=True)
-    
