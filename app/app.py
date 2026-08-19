@@ -63,12 +63,12 @@ def run_splink_model(df_records):
     con.execute("PRAGMA threads=2;")
     db_api = DuckDBAPI(connection=con)
 
-    # Core settings
+    # Define blocking rules inside SettingsCreator to keep predictions fast
     settings = SettingsCreator(
         link_type="dedupe_only",
         blocking_rules_to_generate_predictions=[
-            block_on("first_name", "gender"),
-            block_on("last_name", "gender")
+            block_on("first_name"),
+            block_on("last_name")
         ],
         comparisons=[
             cl.LevenshteinAtThresholds("first_name", [1, 2]),
@@ -92,13 +92,8 @@ def run_splink_model(df_records):
         estimate_without_term_frequencies=True
     )
 
-    # Fast prediction with explicit blocking rules
-    predictions = linker.inference.predict(
-        blocking_rules_to_generate_predictions=[
-            block_on("first_name"),
-            block_on("last_name")
-        ]
-    )
+    # Splink 4 predict call (no arguments allowed)
+    predictions = linker.inference.predict()
     
     df_preds = predictions.as_pandas_dataframe()
     records_dict = predictions.as_record_dict()
