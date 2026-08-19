@@ -102,11 +102,11 @@ def run_splink_pipeline(df):
             block_on("age", "gender")
         ],
         "comparisons": [
-            cl.JaroWinklerAtThresholds("first_name", [0.88, 0.94]),
-            cl.JaroWinklerAtThresholds("last_name", [0.88, 0.94]),
-            cl.ExactMatch("gender"),
-            cl.NumericDifferenceAtThresholds("age", thresholds=[1, 3, 5]),
-            cl.NumericDifferenceAtThresholds("hba1c", thresholds=[0.2, 0.5, 1.0]),
+            cl.jaro_winkler_at_thresholds("first_name", [0.88, 0.94]),
+            cl.jaro_winkler_at_thresholds("last_name", [0.88, 0.94]),
+            cl.exact_match("gender"),
+            cl.numeric_difference_at_thresholds("age", thresholds=[1, 3, 5]),
+            cl.numeric_difference_at_thresholds("hba1c", thresholds=[0.2, 0.5, 1.0]),
         ],
         "retain_matching_framework": True,
         "retain_intermediate_calculation_columns": True
@@ -114,12 +114,10 @@ def run_splink_pipeline(df):
 
     linker = Linker(df, settings, db_api=db_api)
     
-    # Splink 4 uses linker.training
     linker.training.estimate_u_probability_two_random_records_match(max_pairs=50_000, seed=42)
     linker.training.estimate_parameters_using_expectation_maximization(block_on("first_name"))
     linker.training.estimate_parameters_using_expectation_maximization(block_on("last_name"))
 
-    # Splink 4 uses linker.inference
     predictions = linker.inference.predict(match_weight_threshold=-5.0)
     df_preds = predictions.as_pandas_dataframe()
     
